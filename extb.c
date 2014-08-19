@@ -311,7 +311,7 @@ int read_file(int fd) {
     }
 
     unsigned short intname_len = ntohs(*(unsigned short *)(hdr + 8));
-    char intname[intname_len];
+    char intname[intname_len + 4];
     READ_FULLY(fd, intname, intname_len);
     printf("File header for %s.\n", intname + 1);
 
@@ -409,7 +409,16 @@ int read_file(int fd) {
 
     convert_map(raw, attrval[0], attrval[1], bflags, bitmap);
     // TODO cut regions based on simg coordinates
-    write_map(bitmap, toread, attrval[0], attrval[1], "map.png");
+
+    /* 4 more bytes were allocated earlier : ) */
+    for (int i = 0; i < intname_len; ++i) {
+        /* Replace slashes to _ so we don't leave the current dir. */
+        if (intname[i] == '/')
+            intname[i] = '_';
+    }
+    strncat(intname, ".png", 4);
+    write_map(bitmap, toread, attrval[0], attrval[1], intname + 1);
+    printf("Write bank to %s.\n", intname + 1);
 
     free(raw);
     free(bitmap);
