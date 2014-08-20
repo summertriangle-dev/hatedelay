@@ -119,7 +119,7 @@ void print_imgtype(szk_type_t o) {
         printf("mipmap, ");
     if (o.is_doublebuffered)
         printf("double-buffered, ");
-    printf("\n");
+    puts("");
     printf("\tPixel format:    %d\n", o.pix_format);
 }
 
