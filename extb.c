@@ -119,7 +119,7 @@ void print_imgtype(szk_type_t o) {
         printf("mipmap, ");
     if (o.is_doublebuffered)
         printf("double-buffered, ");
-    printf("\n");
+    puts("");
     printf("\tPixel format:    %d\n", o.pix_format);
 }
 
@@ -456,6 +456,7 @@ int read_file(int fd, char *out) {
     }
 
     convert_map(raw, attrval[0], attrval[1], bflags, bitmap);
+<<<<<<< HEAD
     strncat(intname, ".png", 4);
 
     char *tmp = strdup(intname);
