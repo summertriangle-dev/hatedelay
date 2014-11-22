@@ -456,7 +456,6 @@ int read_file(int fd, char *out) {
     }
 
     convert_map(raw, attrval[0], attrval[1], bflags, bitmap);
-<<<<<<< HEAD
     strncat(intname, ".png", 4);
 
     char *tmp = strdup(intname);
