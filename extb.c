@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <zlib.h>
 #include <sys/stat.h>
+#include <libgen.h>
 
 #include "lodepng.h"
 // #include "lodepng.c"
@@ -14,7 +15,6 @@ typedef unsigned char byte;
 
 #include "pixel.c"
 
-/* Hardline file read, either reads size bytes or crashes. -altair */
 #define READ_FULLY(fd, target, size) { \
     size_t _eval_one = (size_t)(size); \
     /* printf("dbg size: %zu\n", _eval_one); */ \
@@ -286,10 +286,7 @@ void convert_map(byte *raw, int w, int h, szk_type_t type, byte *output) {
 }
 
 void write_map(byte *buf, unsigned long len, int w, int h, const char *path) {
-    // todo compress to png
-
     lodepng_encode_file(path, buf, w, h, LCT_RGBA, 8);
-
     // int fd = open(path, O_CREAT | O_WRONLY, 0644);
     // assert(fd > 0);
     //
@@ -297,13 +294,64 @@ void write_map(byte *buf, unsigned long len, int w, int h, const char *path) {
     // close(fd);
 }
 
-int read_file(int fd) {
+void write_sections(byte *buf, szk_idescriptor_t des, const char *prefix,
+                    const char *src_bank) {
+
+    char *tmp = strdup(des->name);
+    char *base = basename(tmp);
+
+    int staticpart = strlen(prefix) + strlen(base) + 1;
+    char *filename = calloc(staticpart + 8, 1);
+    strcpy(filename, prefix);
+    strcat(filename, "/");
+    strcat(filename, base);
+
+    free(tmp);
+
+    if (!strncmp(filename + staticpart - 5, ".imag", 5)) {
+        filename[staticpart - 5] = '\0';
+    }
+    strcat(filename, ".extbvt");
+
+    int fd = open(filename, O_CREAT | O_EXCL | O_WRONLY, 0644);
+    if (fd == -1) {
+        perror(filename);
+        free(filename);
+        return;
+    }
+
+    uint32_t srclen = strlen(src_bank);
+    WRITE_FULLY(fd, &srclen, sizeof(uint32_t));
+    WRITE_FULLY(fd, src_bank, srclen);
+
+    uint32_t num;
+    num = des->simgs[0].width;
+    WRITE_FULLY(fd, &num, sizeof(uint32_t));
+    num = des->simgs[0].height;
+    WRITE_FULLY(fd, &num, sizeof(uint32_t));
+
+    num = des->simgs[0].vertexes_n;
+    WRITE_FULLY(fd, &num, sizeof(uint32_t));
+    for (int i = 0; i < num; ++i) {
+        WRITE_FULLY(fd, &(des->simgs[0].vertexes[i * 2]), sizeof(double) * 2);
+    }
+    for (int i = 0; i < num; ++i) {
+        WRITE_FULLY(fd, &(des->simgs[0].uv[i * 2]), sizeof(double) * 2);
+    }
+    close(fd);
+
+    printf("Write section to %s.\n", filename);
+    free(filename);
+}
+
+int read_file(int fd, char *out) {
     int final_status = 0;
 
     byte hdr[10];
     READ_FULLY(fd, hdr, 10);
 
     uint32_t magic = ntohl(*(uint32_t *)(hdr));
+    uint32_t data_length = ntohl(*(uint32_t *)(hdr + 4));
     if (magic != 'TEXB') {
         puts("bad magic number!");
         printf("expected %u, got %u\n", 'TEXB', magic);
@@ -311,7 +359,7 @@ int read_file(int fd) {
     }
 
     unsigned short intname_len = ntohs(*(unsigned short *)(hdr + 8));
-    char intname[intname_len];
+    char intname[intname_len + 4];
     READ_FULLY(fd, intname, intname_len);
     printf("File header for %s.\n", intname + 1);
 
@@ -349,9 +397,8 @@ int read_file(int fd) {
     }
 
     unsigned long have = lseek(fd, 0, SEEK_CUR);
-    struct stat info;
-    fstat(fd, &info);
-    unsigned long toread = info.st_size - have;
+    /* Need compensate for magic & size (8byte). */
+    unsigned long toread = data_length - have + 8;
     byte *raw = malloc(toread);
     READ_FULLY(fd, raw, toread);
 
@@ -384,7 +431,7 @@ int read_file(int fd) {
 
             size_t infsize = attrval[0] * attrval[1] *
                              get_bpp(bflags.pix_format, bflags.img_format);
-            byte *inf = malloc(infsize);
+            byte *inf = calloc(infsize, 1);
 
             state.avail_in = toread;
             state.next_in = raw + 4;
@@ -392,6 +439,7 @@ int read_file(int fd) {
             state.next_out = inf;
 
             ret = inflate(&state, Z_NO_FLUSH);
+
             if ((ret != Z_OK) && (ret != Z_STREAM_END)) {
                 puts("cannot initialize zlib");
                 final_status = 7;
@@ -408,9 +456,27 @@ int read_file(int fd) {
     }
 
     convert_map(raw, attrval[0], attrval[1], bflags, bitmap);
-    // TODO cut regions based on simg coordinates
-    write_map(bitmap, toread, attrval[0], attrval[1], "map.png");
+    strncat(intname, ".png", 4);
 
+    char *tmp = strdup(intname);
+    char *base = basename(tmp);
+    char *output = calloc(strlen(out) + strlen(base) + 2, 1);
+
+    strcat(output, out);
+    strcat(output, "/");
+    strcat(output, base);
+
+    free(tmp);
+
+    write_map(bitmap, toread, attrval[0], attrval[1], output);
+    printf("Write bank to %s.\n", output);
+    free(output);
+
+    for (int i = 0; i < attrval[5]; ++i) {
+        write_sections(bitmap, &images[i], out, intname + 1);
+    }
+
+  late_cleanup:
     free(raw);
     free(bitmap);
 
@@ -430,8 +496,9 @@ int read_file(int fd) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        puts("use: ./extb <in-file>");
-        puts("warning! output files are written to working directory");
+        puts("use: ./extb <in-file> <dest-root>");
+        puts("writes bank and cutting support files to name under dest-root.");
+        puts("to be invoked by doit.sh");
         return 1;
     }
 
@@ -441,7 +508,7 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    int ret = read_file(fd);
+    int ret = read_file(fd, argv[2]);
     close(fd);
 
     return ret;
