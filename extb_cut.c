@@ -207,6 +207,7 @@ void render_all_in_root(GLFWwindow *win, char *root) {
         free(pth);
         record = readdir(directory);
     }
+    closedir(directory);
 }
 
 int main(int argc, char *argv[]) {
