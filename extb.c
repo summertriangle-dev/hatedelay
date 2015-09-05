@@ -2,11 +2,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <assert.h>
 #include <zlib.h>
 #include <sys/stat.h>
-#include <libgen.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <stdint.h>
+#include <winsock2.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "lodepng.h"
 // #include "lodepng.c"
@@ -15,17 +21,18 @@ typedef unsigned char byte;
 
 #include "pixel.c"
 
-#define READ_FULLY(fd, target, size) { \
+#define READ_FULLY(fd, target, size) do { \
     size_t _eval_one = (size_t)(size); \
     /* printf("dbg size: %zu\n", _eval_one); */ \
     assert(read((fd), (target), _eval_one) == _eval_one); \
-}
+    /* if (crypt_->is_crypted) mech_decrypt(target, _eval_one, crypt_->mst); */ \
+} while(0)
 
-#define WRITE_FULLY(fd, source, size) { \
+#define WRITE_FULLY(fd, source, size) do { \
     size_t _eval_one = (size_t)(size); \
     /* printf("dbg size: %zu\n", _eval_one); */ \
     assert(write((fd), (source), _eval_one) == _eval_one); \
-}
+} while(0)
 
 typedef enum {
     ALPHA    = 0,
@@ -99,7 +106,7 @@ void get_imgtype(unsigned short def, szk_type_t *ret) {
     byte flags = (byte)def;
 
     /* bits 1-3 */
-    ret->img_format = (flags & 0x07);
+    ret->img_format = (szk_image_format_t)(flags & 0x07);
     /* bit 4 */
     ret->is_compressed = (flags & 0x08) >> 3;
     /* bit 5 */
@@ -107,7 +114,7 @@ void get_imgtype(unsigned short def, szk_type_t *ret) {
     /* bit 6 */
     ret->is_doublebuffered = (flags & 0x20) >> 5;
     /* bit 7-8 */
-    ret->pix_format = (flags & 0xC0) >> 6;
+    ret->pix_format = (szk_pixel_format_t)((flags & 0xC0) >> 6);
 }
 
 void print_imgtype(szk_type_t o) {
@@ -135,11 +142,12 @@ int read_descriptor(int fd, szk_idescriptor_t result) {
     }
 
     unsigned short intname_len = ntohs(*(unsigned short *)(hdr + 6));
-    char intname[intname_len];
+    char *intname = (char *)calloc(intname_len, 1);
     READ_FULLY(fd, intname, intname_len);
 
     // printf("%s\n", intname);
     result->name = strdup(intname + 1);
+    free(intname);
 
     unsigned short subs_attrsk;
     READ_FULLY(fd, &subs_attrsk, 2);
@@ -179,7 +187,7 @@ int read_descriptor(int fd, szk_idescriptor_t result) {
     subs_attrsk = ntohs(subs_attrsk);
     // printf("%u sections in this image.\n", subs_attrsk);
     result->simg_count = subs_attrsk;
-    result->simgs = malloc(subs_attrsk * sizeof(struct szk_subimage_s));
+    result->simgs = (szk_subimage_t)malloc(subs_attrsk * sizeof(struct szk_subimage_s));
 
     for (int i = 0; i < subs_attrsk; ++i) {
         unsigned short attrval[5];
@@ -202,12 +210,12 @@ int read_descriptor(int fd, szk_idescriptor_t result) {
         int blks_vertex = sizeof(uint32_t) * short_vals[0] * 4;
         int blks_index = short_vals[1];
 
-        byte vibuf[blks_vertex + blks_index];
+        byte *vibuf = (byte *) malloc(blks_vertex + blks_index);
         READ_FULLY(fd, vibuf, blks_vertex + blks_index);
 
         uint32_t *lcoords = (uint32_t *) vibuf;
-        result->simgs[i].vertexes = malloc(sizeof(double) * short_vals[0] * 2);
-        result->simgs[i].uv = malloc(sizeof(double) * short_vals[0] * 2);
+        result->simgs[i].vertexes = (double *) malloc(sizeof(double) * short_vals[0] * 2);
+        result->simgs[i].uv = (double *) malloc(sizeof(double) * short_vals[0] * 2);
 
         for (int j = 0; j < short_vals[0]; ++j) {
             /* XY in screen scale */
@@ -225,8 +233,9 @@ int read_descriptor(int fd, szk_idescriptor_t result) {
             lcoords += 4;
         }
 
-        result->simgs[i].indexes = malloc(blks_index);
+        result->simgs[i].indexes = (int *) malloc(blks_index);
         memcpy(vibuf + blks_vertex, result->simgs[i].indexes, blks_index);
+        free(vibuf);
     }
     return 0;
 }
@@ -298,10 +307,14 @@ void write_sections(byte *buf, szk_idescriptor_t des, const char *prefix,
                     const char *src_bank) {
 
     char *tmp = strdup(des->name);
-    char *base = basename(tmp);
+    char *base = strrchr(tmp, '/');
+    if (!base)
+        base = tmp;
+    else
+        base += 1;
 
     int staticpart = strlen(prefix) + strlen(base) + 1;
-    char *filename = calloc(staticpart + 8, 1);
+    char *filename = (char *) calloc(staticpart + 8, 1);
     strcpy(filename, prefix);
     strcat(filename, "/");
     strcat(filename, base);
@@ -359,7 +372,7 @@ int read_file(int fd, char *out) {
     }
 
     unsigned short intname_len = ntohs(*(unsigned short *)(hdr + 8));
-    char intname[intname_len + 4];
+    char *intname = (char *) calloc(intname_len + 4, 1);
     READ_FULLY(fd, intname, intname_len);
     printf("File header for %s.\n", intname + 1);
 
@@ -384,7 +397,7 @@ int read_file(int fd, char *out) {
         return 4;
     }
 
-    szk_idescriptor_t images = calloc(attrval[5], sizeof(struct szk_image_s));
+    szk_idescriptor_t images = (szk_idescriptor_t) calloc(attrval[5], sizeof(struct szk_image_s));
     for (int i = 0; i < attrval[5]; ++i) {
         int ret = read_descriptor(fd, &images[i]);
         print_descriptor(&images[i]);
@@ -399,11 +412,11 @@ int read_file(int fd, char *out) {
     unsigned long have = lseek(fd, 0, SEEK_CUR);
     /* Need compensate for magic & size (8byte). */
     unsigned long toread = data_length - have + 8;
-    byte *raw = malloc(toread);
+    byte *raw = (byte *) malloc(toread);
     READ_FULLY(fd, raw, toread);
 
     /* all are RGBA */
-    byte *bitmap = calloc(attrval[0] * attrval[1] * 4, 1);
+    byte *bitmap = (byte *) calloc(attrval[0] * attrval[1] * 4, 1);
 
     if (bflags.is_compressed) {
         /* according to playground, read 4 more bytes to find out type of
@@ -431,7 +444,7 @@ int read_file(int fd, char *out) {
 
             size_t infsize = attrval[0] * attrval[1] *
                              get_bpp(bflags.pix_format, bflags.img_format);
-            byte *inf = calloc(infsize, 1);
+            byte *inf = (byte *) calloc(infsize, 1);
 
             state.avail_in = toread;
             state.next_in = raw + 4;
@@ -459,8 +472,21 @@ int read_file(int fd, char *out) {
     strncat(intname, ".png", 4);
 
     char *tmp = strdup(intname);
-    char *base = basename(tmp);
-    char *output = calloc(strlen(out) + strlen(base) + 2, 1);
+    char *base = strrchr(tmp, '/');
+    if (!base) {
+        base = tmp;
+    } else {
+#ifdef _WIN32
+        char *otherbase = strrchr(base, '\\');
+        if (!otherbase)
+            otherbase = base;
+#else
+        char *otherbase = base;
+#endif
+        base = otherbase += 1;
+    }
+    
+    char *output = (char *) calloc(strlen(out) + strlen(base) + 2, 1);
 
     strcat(output, out);
     strcat(output, "/");
@@ -491,6 +517,7 @@ int read_file(int fd, char *out) {
         free(images[i].simgs);
     }
     free(images);
+    free(intname);
     return final_status;
 }
 
