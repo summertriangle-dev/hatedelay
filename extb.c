@@ -13,6 +13,7 @@
 #include <winsock2.h>
 #endif
 #else
+#define O_BINARY 0
 #include <unistd.h>
 #endif
 
@@ -26,7 +27,7 @@ typedef unsigned char byte;
 #define READ_FULLY(fd, target, size) do { \
     size_t _eval_one = (size_t)(size); \
     /* printf("dbg size: %zu\n", _eval_one); */ \
-	size_t _eval_two = read((fd), (target), _eval_one); \
+    size_t _eval_two = read((fd), (target), _eval_one); \
     assert(_eval_two == _eval_one); \
     /* if (crypt_->is_crypted) mech_decrypt(target, _eval_one, crypt_->mst); */ \
 } while(0)
@@ -34,7 +35,7 @@ typedef unsigned char byte;
 #define WRITE_FULLY(fd, source, size) do { \
     size_t _eval_one = (size_t)(size); \
     /* printf("dbg size: %zu\n", _eval_one); */ \
-	size_t _eval_two = write((fd), (source), _eval_one); \
+    size_t _eval_two = write((fd), (source), _eval_one); \
     assert(_eval_two == _eval_one); \
 } while(0)
 
@@ -533,7 +534,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-	int fd = open(argv[1], O_RDONLY|O_BINARY);
+    int fd = open(argv[1], O_RDONLY | O_BINARY);
     if (fd < 0) {
         perror("open failed");
         return 2;
