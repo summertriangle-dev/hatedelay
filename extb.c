@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <fcntl.h>
 #include <assert.h>
@@ -8,14 +9,13 @@
 
 #ifdef _WIN32
 #include <io.h>
-#include <stdint.h>
 #ifndef _MSC_VER
 #include <winsock2.h>
-#endif
+#endif /* _MSC_VER */
 #else
 #define O_BINARY 0
 #include <unistd.h>
-#endif
+#endif /* _WIN32 */
 
 #include "lodepng.h"
 // #include "lodepng.c"
