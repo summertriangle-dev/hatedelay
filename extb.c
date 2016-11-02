@@ -1,3 +1,5 @@
+#define _BSD_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -6,6 +8,8 @@
 #include <assert.h>
 #include <zlib.h>
 #include <sys/stat.h>
+#include <libgen.h>
+#include <math.h>
 
 #ifdef _WIN32
 #include <io.h>
@@ -15,6 +19,7 @@
 #else
 #define O_BINARY 0
 #include <unistd.h>
+#include <arpa/inet.h>
 #endif /* _WIN32 */
 
 #include "lodepng.h"
@@ -24,12 +29,14 @@ typedef unsigned char byte;
 
 #include "pixel.c"
 
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
+
 #define READ_FULLY(fd, target, size) do { \
     size_t _eval_one = (size_t)(size); \
     /* printf("dbg size: %zu\n", _eval_one); */ \
     size_t _eval_two = read((fd), (target), _eval_one); \
     assert(_eval_two == _eval_one); \
-    /* if (crypt_->is_crypted) mech_decrypt(target, _eval_one, crypt_->mst); */ \
 } while(0)
 
 #define WRITE_FULLY(fd, source, size) do { \
@@ -299,24 +306,77 @@ void convert_map(byte *raw, int w, int h, szk_type_t type, byte *output) {
 
 }
 
-void write_map(byte *buf, unsigned long len, int w, int h, const char *path) {
+void write_png(byte *buf, unsigned long len, int w, int h, const char *path) {
     lodepng_encode_file(path, buf, w, h, LCT_RGBA, 8);
-    // int fd = open(path, O_CREAT | O_WRONLY, 0644);
-    // assert(fd > 0);
-    //
-    // WRITE_FULLY(fd, buf, len);
-    // close(fd);
 }
 
-void write_sections(byte *buf, szk_idescriptor_t des, const char *prefix,
-                    const char *src_bank) {
+void sample_and_write_image(byte *buf, int bank_width, int bank_height,
+                            szk_idescriptor_t des, const char *prefix) {
+
+    int tl, tr, bl, br;
+    int low_x = 99999, high_x = -99999, low_y = 99999, high_y = -99999;
+
+    double *vertices = des->simgs[0].vertexes;
+    double *uvs = des->simgs[0].uv;
+
+    for (int i = 0; i < des->simgs[0].vertexes_n; ++i) {
+        double *x = &vertices[i * 2];
+        double *y = &vertices[(i * 2) + 1];
+
+        low_x = MIN(low_x, *x);
+        high_x = MAX(high_x, *x);
+
+        low_y = MIN(low_y, *y);
+        high_y = MAX(high_y, *y);
+    }
+
+    for (int i = 0; i < des->simgs[0].vertexes_n; ++i) {
+        double x = vertices[i * 2];
+        double y = vertices[(i * 2) + 1];
+
+        if (x == low_x && y == low_y)    tl = i;
+        if (x == low_x && y == high_y)   bl = i;
+        if (x == high_x && y == low_y)   tr = i;
+        if (x == high_x && y == high_y)  br = i;
+    }
+
+    int swap_xy = (uvs[tl * 2] == uvs[tr * 2])? 1 : 0;
+    double x_near = uvs[tl * 2];
+    double x_far  = uvs[br * 2];
+    double y_near = uvs[(tl * 2) + 1];
+    double y_far  = uvs[(br * 2) + 1];
+
+#define LERP(near, far, pct) (near + ((far - near) * pct))
+#define SAMPLE(x, y, stride) ((( (uint32_t)y * stride) + (uint32_t)x ) * 4)
+
+    // compile with -Ofast!!
+
+    byte *img = malloc(des->simgs[0].width * des->simgs[0].height * 4);
+    if (swap_xy) {
+        for (int tgt_y = 0; tgt_y < des->simgs[0].height; tgt_y++) {
+            double lerp_x = round((LERP(x_near, x_far, (double)tgt_y / des->simgs[0].height) * bank_width));
+
+            for (int tgt_x = 0; tgt_x < des->simgs[0].width; tgt_x++) {
+                double lerp_y = round((LERP(y_near, y_far, (double)tgt_x / des->simgs[0].width) * bank_height));
+                memcpy(img + SAMPLE(tgt_x, tgt_y, des->simgs[0].width), buf + SAMPLE(lerp_x, lerp_y, bank_width), 4);
+            }
+        }
+    } else {
+        for (int tgt_y = 0; tgt_y < des->simgs[0].height; tgt_y++) {
+            double lerp_y = round((LERP(y_near, y_far, (double)tgt_y / des->simgs[0].height) * bank_height));
+
+            for (int tgt_x = 0; tgt_x < des->simgs[0].width; tgt_x++) {
+                double lerp_x = round((LERP(x_near, x_far, (double)tgt_x / des->simgs[0].width) * bank_width));
+                memcpy(img + SAMPLE(tgt_x, tgt_y, des->simgs[0].width), buf + SAMPLE(lerp_x, lerp_y, bank_width), 4);
+            }
+        }
+    }
+
+#undef LERP
+#undef SAMPLE
 
     char *tmp = strdup(des->name);
-    char *base = strrchr(tmp, '/');
-    if (!base)
-        base = tmp;
-    else
-        base += 1;
+    char *base = basename(tmp);
 
     int staticpart = strlen(prefix) + strlen(base) + 1;
     char *filename = (char *) calloc(staticpart + 8, 1);
@@ -329,37 +389,15 @@ void write_sections(byte *buf, szk_idescriptor_t des, const char *prefix,
     if (!strncmp(filename + staticpart - 5, ".imag", 5)) {
         filename[staticpart - 5] = '\0';
     }
-    strcat(filename, ".extbvt");
-
-    int fd = open(filename, O_CREAT | O_EXCL | O_WRONLY, 0644);
-    if (fd == -1) {
-        perror(filename);
-        free(filename);
-        return;
+    if (strncmp(filename + staticpart - 9, ".png", 4)) {
+        strcat(filename, ".png");
     }
 
-    uint32_t srclen = strlen(src_bank);
-    WRITE_FULLY(fd, &srclen, sizeof(uint32_t));
-    WRITE_FULLY(fd, src_bank, srclen);
+    write_png(img, 0, des->simgs[0].width, des->simgs[0].height, filename);
+    printf("SAVED: %s to %s\n", des->name, filename);
 
-    uint32_t num;
-    num = des->simgs[0].width;
-    WRITE_FULLY(fd, &num, sizeof(uint32_t));
-    num = des->simgs[0].height;
-    WRITE_FULLY(fd, &num, sizeof(uint32_t));
-
-    num = des->simgs[0].vertexes_n;
-    WRITE_FULLY(fd, &num, sizeof(uint32_t));
-    for (int i = 0; i < num; ++i) {
-        WRITE_FULLY(fd, &(des->simgs[0].vertexes[i * 2]), sizeof(double) * 2);
-    }
-    for (int i = 0; i < num; ++i) {
-        WRITE_FULLY(fd, &(des->simgs[0].uv[i * 2]), sizeof(double) * 2);
-    }
-    close(fd);
-
-    printf("Write section to %s.\n", filename);
     free(filename);
+    free(img);
 }
 
 int read_file(int fd, char *out) {
@@ -474,37 +512,9 @@ int read_file(int fd, char *out) {
     }
 
     convert_map(raw, attrval[0], attrval[1], bflags, bitmap);
-    strncat(intname, ".png", 4);
-
-    char *tmp = strdup(intname);
-    char *base = strrchr(tmp, '/');
-    if (!base) {
-        base = tmp;
-    } else {
-#ifdef _WIN32
-        char *otherbase = strrchr(base, '\\');
-        if (!otherbase)
-            otherbase = base;
-#else
-        char *otherbase = base;
-#endif
-        base = otherbase += 1;
-    }
-    
-    char *output = (char *) calloc(strlen(out) + strlen(base) + 2, 1);
-
-    strcat(output, out);
-    strcat(output, "/");
-    strcat(output, base);
-
-    free(tmp);
-
-    write_map(bitmap, toread, attrval[0], attrval[1], output);
-    printf("Write bank to %s.\n", output);
-    free(output);
 
     for (int i = 0; i < attrval[5]; ++i) {
-        write_sections(bitmap, &images[i], out, intname + 1);
+        sample_and_write_image(bitmap, attrval[0], attrval[1], &images[i], out);
     }
 
   late_cleanup:

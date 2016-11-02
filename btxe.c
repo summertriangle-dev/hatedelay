@@ -7,6 +7,8 @@
 #include <zlib.h>
 #include <sys/stat.h>
 #include <libgen.h>
+#include <stdint.h>
+#include <arpa/inet.h>
 
 #include "lodepng.h"
 // #include "lodepng.c"
